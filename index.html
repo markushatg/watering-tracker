@@ -1,0 +1,811 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Property Watering Tracker</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js" onerror="loadLocalFabric()"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Fallback to local Fabric.js if CDN fails
+        function loadLocalFabric() {
+            console.warn('CDN Fabric.js failed to load, trying local fabric.min.js...');
+            const script = document.createElement('script');
+            script.src = 'fabric.min.js';
+            script.onerror = () => {
+                console.error('Failed to load local fabric.min.js');
+                alert('Failed to load Fabric.js. Ensure fabric.min.js is in the same folder or check your internet connection. See console (F12) for details.');
+            };
+            script.onload = () => console.log('Loaded local fabric.min.js');
+            document.head.appendChild(script);
+        }
+    </script>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        #canvas-container { border: 1px solid #ccc; max-width: 100%; overflow: auto; }
+        canvas { max-width: 100%; }
+        .color-btn { width: 30px; height: 30px; border: 2px solid #000; cursor: pointer; }
+        .tool-btn { padding: 10px; margin: 2px; border: 1px solid #ccc; cursor: pointer; }
+        .tool-btn.active { background-color: #4a90e2; color: white; }
+        .nav-btn { padding: 10px 16px; margin: 2px; border-radius: 0.375rem; color: white; cursor: pointer; }
+        #drawing-opacity-slider, #week-opacity-slider { width: 200px; }
+        #import-file { display: none; }
+    </style>
+</head>
+<body class="bg-gray-100 p-4">
+    <div class="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow">
+        <h1 class="text-2xl font-bold mb-4 text-center">Property Watering Tracker</h1>
+        
+        <!-- Drawing Tools -->
+        <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700">Drawing Tools:</label>
+            <div class="flex flex-wrap gap-2">
+                <button id="freehand-tool" class="tool-btn">Freehand</button>
+                <button id="line-tool" class="tool-btn">Line</button>
+                <button id="rectangle-tool" class="tool-btn">Rectangle</button>
+                <button id="circle-tool" class="tool-btn">Circle</button>
+                <button id="eraser-tool" class="tool-btn">Eraser</button>
+                <button id="undo-btn" class="tool-btn">Undo</button>
+            </div>
+        </div>
+        
+        <!-- Color Palette -->
+        <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700">Color Palette:</label>
+            <div class="flex gap-2">
+                <div class="color-btn bg-blue-500" data-color="#3B82F6"></div>
+                <div class="color-btn bg-red-500" data-color="#EF4444"></div>
+                <div class="color-btn bg-green-500" data-color="#10B981"></div>
+                <div class="color-btn bg-yellow-500" data-color="#F59E0B"></div>
+            </div>
+        </div>
+        
+        <!-- Opacity Sliders -->
+        <div class="mb-4 flex flex-wrap items-center gap-4">
+            <div class="flex items-center gap-2">
+                <label>Drawing Opacity:</label>
+                <input type="range" id="drawing-opacity-slider" min="0.1" max="1" step="0.1" value="0.5">
+            </div>
+            <div class="flex items-center gap-2">
+                <label>Week View Opacity:</label>
+                <input type="range" id="week-opacity-slider" min="0.1" max="1" step="0.1" value="0.5">
+            </div>
+            <label class="flex items-center">
+                <input type="checkbox" id="week-view-toggle" class="mr-2">
+                Show Past 7 Days (Week View)
+            </label>
+        </div>
+        
+        <!-- Navigation Bar (Top) -->
+        <div class="flex flex-wrap items-center mb-2 gap-2">
+            <input type="date" id="date-picker-top" class="p-2 border rounded">
+            <button id="prev-day-top" class="nav-btn bg-blue-500 hover:bg-blue-600">Previous Day</button>
+            <button id="next-day-top" class="nav-btn bg-blue-500 hover:bg-blue-600">Next Day</button>
+            <button id="clear-day-top" class="nav-btn bg-red-500 hover:bg-red-600">Clear This Day</button>
+            <button id="save-png-top" class="nav-btn bg-green-500 hover:bg-green-600">Save as PNG</button>
+            <button id="export-all-top" class="nav-btn bg-purple-500 hover:bg-purple-600">Export All Data</button>
+            <button id="import-data-top" class="nav-btn bg-teal-500 hover:bg-teal-600">Import Data</button>
+            <button id="zoom-in-top" class="nav-btn bg-gray-500 hover:bg-gray-600">Zoom In</button>
+            <button id="zoom-out-top" class="nav-btn bg-gray-500 hover:bg-gray-600">Zoom Out</button>
+            <input type="file" id="import-file" accept=".zip" style="display: none;">
+        </div>
+        
+        <!-- Canvas -->
+        <div id="canvas-container" class="mb-2">
+            <canvas id="canvas" width="737" height="2273"></canvas>
+        </div>
+        
+        <!-- Navigation Bar (Bottom) -->
+        <div class="flex flex-wrap items-center mt-2 gap-2">
+            <input type="date" id="date-picker-bottom" class="p-2 border rounded">
+            <button id="prev-day-bottom" class="nav-btn bg-blue-500 hover:bg-blue-600">Previous Day</button>
+            <button id="next-day-bottom" class="nav-btn bg-blue-500 hover:bg-blue-600">Next Day</button>
+            <button id="clear-day-bottom" class="nav-btn bg-red-500 hover:bg-red-600">Clear This Day</button>
+            <button id="save-png-bottom" class="nav-btn bg-green-500 hover:bg-green-600">Save as PNG</button>
+            <button id="export-all-bottom" class="nav-btn bg-purple-500 hover:bg-purple-600">Export All Data</button>
+            <button id="import-data-bottom" class="nav-btn bg-teal-500 hover:bg-teal-600">Import Data</button>
+            <button id="zoom-in-bottom" class="nav-btn bg-gray-500 hover:bg-gray-600">Zoom In</button>
+            <button id="zoom-out-bottom" class="nav-btn bg-gray-500 hover:bg-gray-600">Zoom Out</button>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {
+            if (typeof fabric === 'undefined') {
+                console.error('Fabric.js is not loaded');
+                alert('Failed to load Fabric.js. Ensure internet connection or place fabric.min.js in the same folder. Check console (F12) for details.');
+                return;
+            }
+            console.log('Fabric.js loaded, initializing app...');
+
+            const canvas = new fabric.Canvas('canvas', { isDrawingMode: false });
+            let currentDate = new Date().toISOString().split('T')[0]; // Default: 2025-06-14
+            let currentTool = 'freehand';
+            let history = [];
+            let backgroundImage = null;
+            let isDrawing = false;
+            let startX, startY;
+            let tempShape = null;
+            const STORAGE_LIMIT = 5 * 1024 * 1024; // 5 MB
+            const STORAGE_THRESHOLD = 0.8; // 80%
+            const DELETE_THRESHOLD_DAYS = 365; // 1 year
+            const ZOOM_LEVELS = [0.25, 0.5, 0.75, 1.0];
+            let currentZoomIndex = 3; // Start at 100% (1.0)
+            let scrollPosition = { scrollTop: 0, scrollLeft: 0 }; // Track scroll position
+            let drawingOpacity = 0.5; // Initial drawing opacity
+
+            // Initialize Canvas
+            function initializeCanvas() {
+                console.log('Initializing canvas...');
+                canvas.freeDrawingBrush.color = '#3B82F6';
+                canvas.freeDrawingBrush.width = 5;
+                canvas.freeDrawingBrush.opacity = drawingOpacity;
+                canvas.setDimensions({ width: 737, height: 2273 });
+
+                // Load scroll position
+                const savedScroll = localStorage.getItem('canvas-scroll-position');
+                if (savedScroll) {
+                    scrollPosition = JSON.parse(savedScroll);
+                    console.log('Loaded scroll position:', scrollPosition);
+                }
+
+                // Load map
+                fabric.Image.fromURL('property-map.png', (img) => {
+                    if (!img || img.width === 0) {
+                        console.warn('property-map.png not found, trying .jpg...');
+                        fabric.Image.fromURL('property-map.jpg', (jpgImg) => {
+                            if (!jpgImg || jpgImg.width === 0) {
+                                console.error('Failed to load property-map.png or .jpg');
+                                alert('Map not found! Ensure "property-map.png" or ".jpg" is in the same folder. Use a local server (e.g., python -m http.server).');
+                                canvas.setBackgroundColor('#FFFFFF', () => canvas.renderAll());
+                                canvas.add(new fabric.Text('Map not found. Add property-map.png to folder.', {
+                                    left: 10,
+                                    top: 10,
+                                    fontSize: 20,
+                                    fill: '#FF0000'
+                                }));
+                                canvas.renderAll();
+                                loadCanvasForDate(currentDate);
+                            } else {
+                                backgroundImage = jpgImg;
+                                canvas.setBackgroundImage(jpgImg, () => canvas.renderAll(), {
+                                    scaleX: 737 / jpgImg.width,
+                                    scaleY: 2273 / jpgImg.height
+                                });
+                                console.log('Loaded property-map.jpg');
+                                loadCanvasForDate(currentDate);
+                            }
+                        }, { crossOrigin: 'anonymous' });
+                    } else {
+                        backgroundImage = img;
+                        canvas.setBackgroundImage(img, () => canvas.renderAll(), {
+                            scaleX: 737 / img.width,
+                            scaleY: 2273 / img.height
+                        });
+                        console.log('Loaded property-map.png');
+                        loadCanvasForDate(currentDate);
+                    }
+                }, { crossOrigin: 'anonymous' });
+
+                // Scroll listener
+                const canvasContainer = document.getElementById('canvas-container');
+                canvasContainer.addEventListener('scroll', () => {
+                    scrollPosition.scrollTop = canvasContainer.scrollTop;
+                    scrollPosition.scrollLeft = canvasContainer.scrollLeft;
+                    localStorage.setItem('canvas-scroll-position', JSON.stringify(scrollPosition));
+                    console.log('Updated scroll position:', scrollPosition);
+                });
+
+                // Drawing opacity slider
+                document.getElementById('drawing-opacity-slider').addEventListener('input', () => {
+                    drawingOpacity = parseFloat(document.getElementById('drawing-opacity-slider').value);
+                    canvas.freeDrawingBrush.opacity = currentTool === 'eraser' ? 1.0 : drawingOpacity;
+                    console.log('Drawing opacity set to:', drawingOpacity);
+                });
+            }
+
+            // Zoom Functions
+            function setZoom(level) {
+                canvas.setZoom(level);
+                canvas.setWidth(737 * level);
+                canvas.setHeight(2273 * level);
+                canvas.renderAll();
+                console.log('Zoom set to:', level * 100, '%');
+                const canvasContainer = document.getElementById('canvas-container');
+                canvasContainer.scrollTop = scrollPosition.scrollTop;
+                canvasContainer.scrollLeft = scrollPosition.scrollLeft;
+            }
+
+            function attachZoomListeners() {
+                ['top', 'bottom'].forEach(position => {
+                    document.getElementById(`zoom-in-${position}`).addEventListener('click', () => {
+                        if (currentZoomIndex < ZOOM_LEVELS.length - 1) {
+                            currentZoomIndex++;
+                            setZoom(ZOOM_LEVELS[currentZoomIndex]);
+                        }
+                    });
+                    document.getElementById(`zoom-out-${position}`).addEventListener('click', () => {
+                        if (currentZoomIndex > 0) {
+                            currentZoomIndex--;
+                            setZoom(ZOOM_LEVELS[currentZoomIndex]);
+                        }
+                    });
+                });
+            }
+
+            // Calculate LocalStorage usage
+            function getStorageUsage() {
+                let total = 0;
+                for (let key in localStorage) {
+                    if (localStorage.hasOwnProperty(key) && key.startsWith('canvas-')) {
+                        total += ((localStorage[key].length + key.length) * 2);
+                    }
+                }
+                return total;
+            }
+
+            // Delete old data
+            function deleteOldData(thresholdDate) {
+                const dateRegex = /^canvas-(\d{4}-\d{2}-\d{2})$/;
+                const deleted = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    const match = key.match(dateRegex);
+                    if (match) {
+                        const date = new Date(match[1]);
+                        if (date < thresholdDate) {
+                            localStorage.removeItem(key);
+                            deleted.push(match[1]);
+                        }
+                    }
+                }
+                console.log('Deleted old data:', deleted);
+                return deleted.length;
+            }
+
+            // Date Navigation Functions
+            function attachDateNavigationListeners() {
+                ['top', 'bottom'].forEach(position => {
+                    const datePicker = document.getElementById(`date-picker-${position}`);
+                    datePicker.value = currentDate;
+                    datePicker.addEventListener('change', () => {
+                        console.log(`Date picker (${position}) changed to:`, datePicker.value);
+                        currentDate = datePicker.value;
+                        document.getElementById(`date-picker-${position === 'top' ? 'bottom' : 'top'}`).value = currentDate;
+                        loadCanvasForDate(currentDate);
+                    });
+
+                    document.getElementById(`prev-day-${position}`).addEventListener('click', () => {
+                        console.log(`Previous Day (${position}) clicked`);
+                        const date = new Date(currentDate);
+                        date.setDate(date.getDate() - 1);
+                        currentDate = date.toISOString().split('T')[0];
+                        document.getElementById('date-picker-top').value = currentDate;
+                        document.getElementById('date-picker-bottom').value = currentDate;
+                        loadCanvasForDate(currentDate);
+                    });
+
+                    document.getElementById(`next-day-${position}`).addEventListener('click', () => {
+                        console.log(`Next Day (${position}) clicked`);
+                        const date = new Date(currentDate);
+                        date.setDate(date.getDate() + 1);
+                        currentDate = date.toISOString().split('T')[0];
+                        document.getElementById('date-picker-top').value = currentDate;
+                        document.getElementById('date-picker-bottom').value = currentDate;
+                        loadCanvasForDate(currentDate);
+                    });
+
+                    document.getElementById(`clear-day-${position}`).addEventListener('click', () => {
+                        console.log(`Clear Day (${position}) clicked`);
+                        canvas.clear();
+                        if (backgroundImage) {
+                            canvas.setBackgroundImage(backgroundImage, () => canvas.renderAll(), {
+                                scaleX: 737 / backgroundImage.width,
+                                scaleY: 2273 / backgroundImage.height
+                            });
+                        } else {
+                            canvas.setBackgroundColor('#FFFFFF', () => canvas.renderAll());
+                            canvas.add(new fabric.Text('Map not found. Add property-map.png to folder.', {
+                                left: 10,
+                                top: 10,
+                                fontSize: 20,
+                                fill: '#FF0000'
+                            }));
+                        }
+                        localStorage.removeItem(`canvas-${currentDate}`);
+                        history = [];
+                        canvas.renderAll();
+                    });
+
+                    document.getElementById(`save-png-${position}`).addEventListener('click', () => {
+                        console.log(`Save as PNG (${position}) clicked`);
+                        const isWeekView = document.getElementById('week-view-toggle').checked;
+                        const filename = isWeekView ? `watering-map-week-${currentDate}.png` : `watering-map-${currentDate}.png`;
+                        const dataURL = canvas.toDataURL({ format: 'png', multiplier: 1 / ZOOM_LEVELS[currentZoomIndex] });
+                        const link = document.createElement('a');
+                        link.href = dataURL;
+                        link.download = filename;
+                        link.click();
+                    });
+
+                    document.getElementById(`export-all-${position}`).addEventListener('click', () => {
+                        console.log(`Export All Data (${position}) clicked`);
+                        const zip = new JSZip();
+                        const markingsFolder = zip.folder('markings');
+                        const dateRegex = /^canvas-(\d{4}-\d{2}-\d{2})$/;
+                        let hasData = false;
+
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            const match = key.match(dateRegex);
+                            if (match) {
+                                const date = match[1];
+                                const json = localStorage.getItem(key);
+                                markingsFolder.folder(date).file('markings.json', json);
+                                hasData = true;
+                            }
+                        }
+
+                        if (!hasData) {
+                            alert('No canvas data found to export.');
+                            return;
+                        }
+
+                        zip.generateAsync({ type: 'blob' }).then((content) => {
+                            const link = document.createElement('a');
+                            link.href = URL.createObjectURL(content);
+                            link.download = `watering-tracker-backup-${currentDate}.zip`;
+                            link.click();
+                        }).catch((err) => console.error('ZIP generation failed:', err));
+                    });
+
+                    document.getElementById(`import-data-${position}`).addEventListener('click', () => {
+                        console.log(`Import Data (${position}) clicked`);
+                        document.getElementById('import-file').click();
+                    });
+                });
+            }
+
+            // Import Data
+            document.getElementById('import-file').addEventListener('change', (event) => {
+                console.log('Import file selected');
+                const file = event.target.files[0];
+                if (!file || !file.name.endsWith('.zip')) {
+                    alert('Please select a valid ZIP file.');
+                    event.target.value = '';
+                    return;
+                }
+
+                JSZip.loadAsync(file).then((zip) => {
+                    const dateRegex = /^markings\/(\d{4}-\d{2}-\d{2})\/markings\.json$/i;
+                    const promises = [];
+                    const validDates = [];
+                    const skippedFiles = [];
+                    const conflictFiles = [];
+
+                    zip.forEach((relativePath, zipEntry) => {
+                        const match = relativePath.match(dateRegex);
+                        if (match) {
+                            const date = match[1];
+                            validDates.push(date);
+                            promises.push(zipEntry.async('text').then((json) => {
+                                try {
+                                    JSON.parse(json);
+                                    if (localStorage.getItem(`canvas-${date}`)) {
+                                        conflictFiles.push({ date, json });
+                                    } else {
+                                        return { date, json };
+                                    }
+                                } catch (e) {
+                                    console.error(`Skipped ${relativePath}: Invalid JSON (${e.message})`);
+                                    skippedFiles.push(date);
+                                    return null;
+                                }
+                            }));
+                        } else {
+                            console.log(`Skipped ${relativePath}: Does not match expected path`);
+                        }
+                    });
+
+                    Promise.all(promises).then((results) => {
+                        const validResults = results.filter(r => r);
+                        if (validResults.length === 0 && conflictFiles.length === 0) {
+                            alert(`No valid markings found in ZIP file. ${skippedFiles.length > 0 ? `Skipped ${skippedFiles.length} files: ${skippedFiles.join(', ')}` : ''}`);
+                            event.target.value = '';
+                            return;
+                        }
+
+                        let mergeCount = 0;
+                        let overwriteCount = 0;
+                        let skipCount = 0;
+                        const processedDates = [];
+
+                        if (conflictFiles.length > 0) {
+                            const choices = {};
+                            const confirmMsg = `Found ${validResults.length + conflictFiles.length} days to import (${[...validResults.map(r => r.date), ...conflictFiles.map(c => c.date)].join(', ')}). For ${conflictFiles.length} days with existing data, choose action:\n${conflictFiles.map(c => `${c.date}: Merge, Overwrite, Skip`).join('\n')}\nEnter choices as comma-separated (e.g., "Merge,Skip,Overwrite") or leave blank for Merge (default).`;
+                            const userInput = prompt(confirmMsg, conflictFiles.map(() => 'Merge').join(','));
+                            if (userInput === null) {
+                                alert('Import cancelled.');
+                                event.target.value = '';
+                                return;
+                            }
+                            const userChoices = userInput ? userInput.split(',').map(c => c.trim()) : conflictFiles.map(() => 'Merge');
+                            conflictFiles.forEach((conflict, i) => {
+                                const choice = userChoices[i] || 'Merge';
+                                choices[conflict.date] = choice;
+                                if (choice === 'Merge') {
+                                    const existingJson = localStorage.getItem(`canvas-${conflict.date}`);
+                                    const existingParsed = JSON.parse(existingJson);
+                                    const importedParsed = JSON.parse(conflict.json);
+                                    const mergedObjects = [...existingParsed.objects, ...importedParsed.objects];
+                                    const mergedJson = { ...existingParsed, objects: mergedObjects };
+                                    localStorage.setItem(`canvas-${conflict.date}`, JSON.stringify(mergedJson));
+                                    mergeCount++;
+                                    processedDates.push(conflict.date);
+                                } else if (choice === 'Overwrite') {
+                                    localStorage.setItem(`canvas-${conflict.date}`, conflict.json);
+                                    overwriteCount++;
+                                    processedDates.push(conflict.date);
+                                } else {
+                                    skipCount++;
+                                }
+                            });
+                        }
+
+                        validResults.forEach(({ date, json }) => {
+                            localStorage.setItem(`canvas-${date}`, json);
+                            processedDates.push(date);
+                        });
+
+                        let alertMsg = `Import complete: ${processedDates.length} days processed (${processedDates.join(', ')})`;
+                        if (mergeCount > 0) alertMsg += `\nMerged ${mergeCount} days`;
+                        if (overwriteCount > 0) alertMsg += `\nOverwrote ${overwriteCount} days`;
+                        if (skipCount > 0) alertMsg += `\nSkipped ${skipCount} days`;
+                        if (skippedFiles.length > 0) alertMsg += `\nSkipped ${skippedFiles.length} files due to invalid JSON: ${skippedFiles.join(', ')}`;
+                        alert(alertMsg);
+
+                        loadCanvasForDate(currentDate);
+                        event.target.value = '';
+                    }).catch((err) => {
+                        console.error('Error processing ZIP files:', err);
+                        alert('Failed to import data. Ensure ZIP has correct structure (e.g., markings/2025-06-09/markings.json). Check console.');
+                        event.target.value = '';
+                    });
+                }).catch((err) => {
+                    console.error('Failed to load ZIP file:', err);
+                    alert('Error loading ZIP file. Check console.');
+                    event.target.value = '';
+                });
+            });
+
+            // Drawing Tools
+            function setActiveTool(tool) {
+                console.log('Setting tool:', tool);
+                currentTool = tool;
+                canvas.isDrawingMode = tool === 'freehand';
+                canvas.selection = false;
+                document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+                document.getElementById(`${tool}-tool`).classList.add('active');
+
+                if (tool === 'eraser') {
+                    canvas.isDrawingMode = false; // Disable free drawing for eraser
+                    canvas.freeDrawingBrush.opacity = 1.0; // Ensure brush settings don't interfere
+                } else if (tool === 'freehand') {
+                    canvas.isDrawingMode = true;
+                    canvas.freeDrawingBrush.color = document.querySelector('.color-btn[data-color="#3B82F6"]').dataset.color;
+                    canvas.freeDrawingBrush.width = 5;
+                    canvas.freeDrawingBrush.opacity = drawingOpacity;
+                } else {
+                    canvas.isDrawingMode = false;
+                }
+                isDrawing = false;
+                if (tempShape) {
+                    canvas.remove(tempShape);
+                    tempShape = null;
+                    canvas.renderAll();
+                }
+            }
+
+            document.getElementById('freehand-tool').addEventListener('click', () => setActiveTool('freehand'));
+            document.getElementById('line-tool').addEventListener('click', () => setActiveTool('line'));
+            document.getElementById('rectangle-tool').addEventListener('click', () => setActiveTool('rectangle'));
+            document.getElementById('circle-tool').addEventListener('click', () => setActiveTool('circle'));
+            document.getElementById('eraser-tool').addEventListener('click', () => setActiveTool('eraser'));
+
+            // Eraser Logic
+            canvas.on('mouse:move', (o) => {
+                if (currentTool !== 'eraser' || !o.e.buttons) return; // Only erase on mouse hold
+                const pointer = canvas.getPointer(o.e);
+                const eraserSize = 20; // Match previous eraser width
+                const objects = canvas.getObjects();
+                objects.forEach(obj => {
+                    if (obj.type !== 'image' && obj.containsPoint(pointer)) {
+                        canvas.remove(obj);
+                        console.log('Erased object:', obj.type);
+                    }
+                });
+                canvas.renderAll();
+                saveCanvasForDate(currentDate);
+            });
+
+            // Canvas Events for Shapes
+            canvas.on('mouse:down', (o) => {
+                if (!['line', 'rectangle', 'circle'].includes(currentTool)) return;
+                console.log('Mouse down:', currentTool);
+                isDrawing = true;
+                const pointer = canvas.getPointer(o.e);
+                startX = pointer.x;
+                startY = pointer.y;
+                if (tempShape) {
+                    canvas.remove(tempShape);
+                    tempShape = null;
+                }
+            });
+
+            canvas.on('mouse:move', (o) => {
+                if (!isDrawing || !['line', 'rectangle', 'circle'].includes(currentTool)) return;
+                const pointer = canvas.getPointer(o.e);
+                if (tempShape) {
+                    canvas.remove(tempShape);
+                }
+
+                if (currentTool === 'rectangle') {
+                    tempShape = new fabric.Rect({
+                        left: Math.min(startX, pointer.x),
+                        top: Math.min(startY, pointer.y),
+                        width: Math.abs(pointer.x - startX),
+                        height: Math.abs(pointer.y - startY),
+                        fill: canvas.freeDrawingBrush.color,
+                        opacity: drawingOpacity
+                    });
+                } else if (currentTool === 'circle') {
+                    const radius = Math.sqrt(Math.pow(pointer.x - startX, 2) + Math.pow(pointer.y - startY, 2));
+                    tempShape = new fabric.Circle({
+                        left: startX - radius,
+                        top: startY - radius,
+                        radius: radius,
+                        fill: canvas.freeDrawingBrush.color,
+                        opacity: drawingOpacity
+                    });
+                } else if (currentTool === 'line') {
+                    tempShape = new fabric.Line([startX, startY, pointer.x, pointer.y], {
+                        stroke: canvas.freeDrawingBrush.color,
+                        strokeWidth: 5,
+                        opacity: drawingOpacity,
+                        selectable: false
+                    });
+                }
+
+                canvas.add(tempShape);
+                canvas.renderAll();
+                console.log(`Drawing ${currentTool} shape`);
+            });
+
+            canvas.on('mouse:up', () => {
+                if (!isDrawing || !['line', 'rectangle', 'circle'].includes(currentTool)) return;
+                console.log('Mouse up:', currentTool);
+                isDrawing = false;
+                if (tempShape) {
+                    canvas.remove(tempShape);
+                    canvas.add(tempShape);
+                    tempShape = null;
+                    saveCanvasForDate(currentDate);
+                }
+                canvas.renderAll();
+            });
+
+            // Color Palette
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    console.log('Color selected:', btn.dataset.color);
+                    canvas.freeDrawingBrush.color = btn.dataset.color;
+                    if (currentTool === 'freehand') {
+                        canvas.freeDrawingBrush.width = 5;
+                        canvas.freeDrawingBrush.opacity = drawingOpacity;
+                    }
+                });
+            });
+
+            // Undo
+            canvas.on('object:added', (o) => {
+                if (o.target && o.target.type !== 'image') {
+                    if (history.length > 10) history.shift();
+                    history.push(canvas.toJSON());
+                    console.log('Object added, history updated:', history.length);
+                }
+            });
+
+            canvas.on('path:created', () => {
+                if (history.length > 10) history.shift();
+                history.push(canvas.toJSON());
+                console.log('Path created, history updated:', history.length);
+            });
+
+            document.getElementById('undo-btn').addEventListener('click', () => {
+                console.log('Undo clicked, history length:', history.length);
+                if (history.length > 1) {
+                    history.pop(); // Remove current state
+                    const lastState = history[history.length - 1];
+                    canvas.loadFromJSON(lastState, () => {
+                        if (backgroundImage) {
+                            canvas.setBackgroundImage(backgroundImage, () => canvas.renderAll(), {
+                                scaleX: 737 / backgroundImage.width,
+                                scaleY: 2273 / backgroundImage.height
+                            });
+                        }
+                        setZoom(ZOOM_LEVELS[currentZoomIndex]);
+                        saveCanvasForDate(currentDate);
+                        canvas.renderAll();
+                        console.log('Undo applied, restored state');
+                    });
+                } else {
+                    console.log('No more states to undo');
+                }
+            });
+
+            // Save Canvas
+            function saveCanvasForDate(date) {
+                try {
+                    const usage = getStorageUsage();
+                    if (usage > STORAGE_LIMIT * STORAGE_THRESHOLD) {
+                        const thresholdDate = new Date();
+                        thresholdDate.setDate(thresholdDate.getDate() - DELETE_THRESHOLD_DAYS);
+                        const confirmMsg = `LocalStorage is nearly full (${(usage / (1024 * 1024)).toFixed(2)} MB used). Delete data older than ${thresholdDate.toISOString().split('T')[0]} to continue saving?`;
+                        if (confirm(confirmMsg)) {
+                            const deleted = deleteOldData(thresholdDate);
+                            alert(`Deleted ${deleted} old days. Try saving again.`);
+                        } else {
+                            alert('Save cancelled. Export data and clear old entries to free space.');
+                            return;
+                        }
+                    }
+                    const json = canvas.toJSON();
+                    localStorage.setItem(`canvas-${date}`, JSON.stringify(json));
+                    console.log(`Saved canvas for ${date}`);
+                } catch (e) {
+                    console.error('LocalStorage save failed:', e);
+                    alert('Failed to save data. LocalStorage may be full. Export data.');
+                }
+            }
+
+            // Load Canvas
+            function loadCanvasForDate(date, clear = true) {
+                console.log(`Loading canvas for ${date}`);
+                if (clear) {
+                    canvas.getObjects().forEach(obj => canvas.remove(obj));
+                }
+                if (backgroundImage) {
+                    canvas.setBackgroundImage(backgroundImage, () => canvas.renderAll(), {
+                        scaleX: 737 / backgroundImage.width,
+                        scaleY: 2273 / backgroundImage.height
+                    });
+                } else {
+                    canvas.setBackgroundColor('#FFFFFF', () => canvas.renderAll());
+                    canvas.add(new fabric.Text('Map not found. Add property-map.png to folder.', {
+                        left: 10,
+                        top: 10,
+                        fontSize: 20,
+                        fill: '#FF0000'
+                    }));
+                }
+                const json = localStorage.getItem(`canvas-${date}`);
+                if (json) {
+                    canvas.loadFromJSON(json, () => {
+                        canvas.renderAll();
+                        setZoom(ZOOM_LEVELS[currentZoomIndex]);
+                        const canvasContainer = document.getElementById('canvas-container');
+                        canvasContainer.scrollTop = scrollPosition.scrollTop;
+                        canvasContainer.scrollLeft = scrollPosition.scrollLeft;
+                        console.log(`Loaded canvas for ${date}`);
+                    });
+                } else {
+                    canvas.renderAll();
+                    setZoom(ZOOM_LEVELS[currentZoomIndex]);
+                    const canvasContainer = document.getElementById('canvas-container');
+                    canvasContainer.scrollTop = scrollPosition.scrollTop;
+                    canvasContainer.scrollLeft = scrollPosition.scrollLeft;
+                    console.log(`No data for ${date}, rendered empty canvas`);
+                }
+                if (clear) {
+                    history = [canvas.toJSON()];
+                }
+                if (document.getElementById('week-view-toggle').checked) {
+                    loadWeekView();
+                }
+            }
+
+            // Week View
+            document.getElementById('week-view-toggle').addEventListener('change', () => {
+                console.log('Week view toggled:', document.getElementById('week-view-toggle').checked);
+                loadCanvasForDate(currentDate);
+            });
+
+            document.getElementById('week-opacity-slider').addEventListener('input', () => {
+                console.log('Week View Opacity changed:', document.getElementById('week-opacity-slider').value);
+                if (document.getElementById('week-view-toggle').checked) {
+                    loadCanvasForDate(currentDate);
+                }
+            });
+
+            function loadWeekView() {
+                const opacity = parseFloat(document.getElementById('week-opacity-slider').value);
+                const today = new Date(currentDate);
+                for (let i = 6; i >= 0; i--) {
+                    const date = new Date(today);
+                    date.setDate(today.getDate() - i);
+                    const dateStr = date.toISOString().split('T')[0];
+                    if (dateStr !== currentDate) {
+                        const json = localStorage.getItem(`canvas-${dateStr}`);
+                        if (json) {
+                            const tempCanvas = new fabric.Canvas(null);
+                            tempCanvas.loadFromJSON(json, () => {
+                                tempCanvas.getObjects().forEach(obj => {
+                                    obj.opacity = opacity;
+                                    canvas.add(obj);
+                                });
+                                canvas.renderAll();
+                                const canvasContainer = document.getElementById('canvas-container');
+                                canvasContainer.scrollTop = scrollPosition.scrollTop;
+                                canvasContainer.scrollLeft = scrollPosition.scrollLeft;
+                                console.log(`Loaded week view for ${dateStr}`);
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Save on draw
+            canvas.on('path:created', () => {
+                saveCanvasForDate(currentDate);
+                console.log('Path created, canvas saved');
+            });
+
+            // Initialize
+            setActiveTool('freehand');
+            attachDateNavigationListeners();
+            attachZoomListeners();
+            initializeCanvas();
+        };
+    </script>
+</body>
+</html>
